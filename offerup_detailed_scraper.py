@@ -5,7 +5,10 @@ import re
 import time
 import logging
 import os
+import signal
+import sys
 from datetime import datetime
+from time import perf_counter
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
@@ -24,6 +27,26 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Diccionario para tracking de tiempos
+timing_stats = {}
+
+# Variable global para manejar interrupción
+interrupted = False
+
+def signal_handler(sig, frame):
+    """Manejador para Ctrl+C - guarda datos antes de salir"""
+    global interrupted
+    interrupted = True
+    logger.warning("\n\n⚠️  Interrupción detectada (Ctrl+C)")
+    logger.info("Finalizando de forma segura y guardando datos recolectados...")
+
+def log_timing(step_name, start_time):
+    """Helper para logear tiempo de ejecución de cada paso"""
+    elapsed = time.perf_counter() - start_time
+    timing_stats[step_name] = elapsed
+    logger.info(f"⏱️  {step_name}: {elapsed:.2f}s")
+    return elapsed
 
 
 class OfferUpDetailedScraper:
@@ -477,20 +500,27 @@ class OfferUpDetailedScraper:
         logger.info(f"Total de items a extraer: {max_items}")
         logger.info("="*60 + "\n")
         
+        scraping_start = time.perf_counter()
+        
         try:
             self.scraper.setup_driver()
             
             # 1. Navegar a OfferUp
+            step_start = time.perf_counter()
             logger.info("Paso 1: Navegando a OfferUp...")
             self.scraper.get_page(self.base_url)
             logger.info("⏳ Esperando 20 segundos para que cargue completamente...")
-            time.sleep(20)  # Delay de 20 segundos para carga completa
+            time.sleep(20)
+            log_timing("1. Navegación inicial + carga", step_start)
             
             # 2. Configurar ubicación PRIMERO (antes de buscar)
+            step_start = time.perf_counter()
             logger.info("Paso 2: Configurando ubicación...")
             self.configure_location(location)
+            log_timing("2. Configuración de ubicación", step_start)
             
             # 3. Buscar producto
+            step_start = time.perf_counter()
             logger.info("Paso 3: Buscando '{search_term}'...")
             search_box = self.scraper.wait_for_element(By.CSS_SELECTOR, "input[type='search'], input[placeholder*='Search']")
             if search_box:
@@ -499,22 +529,33 @@ class OfferUpDetailedScraper:
                 search_box.send_keys(Keys.RETURN)
                 time.sleep(5)
                 logger.info("✓ Búsqueda realizada")
+            log_timing("3. Búsqueda de producto", step_start)
             
             # 4. Aplicar filtros de precio
+            step_start = time.perf_counter()
             logger.info("Paso 4: Aplicando filtros de precio...")
             self.apply_price_filters(min_price, max_price)
+            log_timing("4. Aplicación de filtros", step_start)
             
             # 5. Procesar páginas dinámicamente
             page_num = 1
             total_extracted = 0
             
             while total_extracted < max_items:
+                # Verificar si hay interrupción
+                if interrupted:
+                    logger.warning("⚠️  Deteniendo scraping por interrupción del usuario...")
+                    break
+                
+                page_start = time.perf_counter()
                 logger.info(f"\n{'='*60}")
                 logger.info(f"PÁGINA {page_num} - Extraídos: {total_extracted}/{max_items}")
                 logger.info(f"{'='*60}\n")
                 
                 # Obtener TODOS los enlaces de productos de la página actual
-                product_links = self.get_product_links(max_items=999)  # Sin límite por página
+                links_start = time.perf_counter()
+                product_links = self.get_product_links(max_items=999)
+                log_timing(f"5.{page_num}.a Obtención de enlaces", links_start)
                 
                 if not product_links:
                     logger.warning(f"No se encontraron productos en página {page_num}")
@@ -528,18 +569,36 @@ class OfferUpDetailedScraper:
                 logger.info(f"Items a procesar: {items_to_process}\n")
                 
                 # Procesar cada producto
+                products_start = time.perf_counter()
                 for idx in range(items_to_process):
+                    # Verificar interrupción en cada producto
+                    if interrupted:
+                        logger.warning("⚠️  Deteniendo procesamiento de productos...")
+                        break
+                        
+                    item_start = time.perf_counter()
                     product_url = product_links[idx]
                     global_index = total_extracted + idx + 1
                     product_data = self.extract_product_details(product_url, global_index)
                     self.all_products.append(product_data)
+                    log_timing(f"   Producto {global_index}", item_start)
                     
                     # Volver a la página de resultados
-                    self.scraper.driver.back()
-                    time.sleep(1)
+                    if not interrupted:  # Solo volver si no fue interrumpido
+                        self.scraper.driver.back()
+                        time.sleep(1)
+                
+                # Si hubo interrupción durante procesamiento, actualizar contador con lo procesado
+                if interrupted:
+                    actual_processed = len([p for p in self.all_products if p['index'] > total_extracted])
+                    total_extracted += actual_processed
+                    break
+                
+                log_timing(f"5.{page_num}.b Procesamiento de {items_to_process} productos", products_start)
                 
                 # Actualizar contador total
                 total_extracted += items_to_process
+                log_timing(f"5.{page_num} Página completa", page_start)
                 logger.info(f"\n✓ Total extraído hasta ahora: {total_extracted}/{max_items}")
                 
                 # Si ya alcanzamos el máximo, terminar
@@ -580,10 +639,28 @@ class OfferUpDetailedScraper:
                     logger.warning(f"Error al cambiar de página: {e}")
                     break
             
+        except KeyboardInterrupt:
+            logger.warning("\n⚠️  Interrupción por teclado (Ctrl+C)")
+            logger.info("Guardando datos recolectados antes de salir...")
+        
         except Exception as e:
             logger.error(f"Error durante el scraping: {e}")
         
         finally:
+            total_time = time.perf_counter() - scraping_start
+            log_timing("TOTAL SCRAPING", scraping_start)
+            
+            # Mostrar resumen de tiempos
+            logger.info("\n" + "="*60)
+            logger.info("RESUMEN DE TIEMPOS")
+            logger.info("="*60)
+            for step, duration in timing_stats.items():
+                logger.info(f"{step}: {duration:.2f}s")
+            logger.info("="*60 + "\n")
+            
+            if interrupted:
+                logger.info(f"💾 Datos recolectados antes de la interrupción: {len(self.all_products)} productos")
+            
             self.scraper.close()
         
         return self.all_products
@@ -591,13 +668,17 @@ class OfferUpDetailedScraper:
 
 def main():
     """Función principal"""
+    # Registrar manejador de señales para Ctrl+C
+    signal.signal(signal.SIGINT, signal_handler)
+    
     Config.create_directories()
     
     # Crear carpeta con timestamp para esta ejecución
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_folder = os.path.join("data", f"scraping_{timestamp}")
     os.makedirs(output_folder, exist_ok=True)
-    logger.info(f"Carpeta de salida: {output_folder}")
+    logger.info(f"📁 Carpeta de salida creada: {output_folder}")
+    logger.info(f"ℹ️  Presiona Ctrl+C en cualquier momento para detener y guardar datos\n")
     
     # Parámetros
     search_term = "iphone"
@@ -618,25 +699,34 @@ def main():
         max_items=max_items
     )
     
-    # Guardar resultados en la carpeta con timestamp
+    # Guardar resultados en la carpeta con timestamp (siempre, incluso si fue interrumpido)
     if results:
+        save_start = time.perf_counter()
+        
         filename_json = os.path.join(output_folder, f"offerup_{search_term}_detailed.json")
         filename_csv = os.path.join(output_folder, f"offerup_{search_term}_detailed.csv")
         
+        logger.info(f"\n💾 Guardando {len(results)} productos...")
         save_to_json(results, filename_json)
         save_to_csv(results, filename_csv)
         
+        save_time = time.perf_counter() - save_start
+        
         logger.info("\n" + "="*60)
-        logger.info("SCRAPING COMPLETADO")
+        if interrupted:
+            logger.info("⚠️  SCRAPING INTERRUMPIDO (datos guardados)")
+        else:
+            logger.info("✅ SCRAPING COMPLETADO")
         logger.info("="*60)
         logger.info(f"Total de productos extraídos: {len(results)}")
         logger.info(f"Carpeta de salida: {output_folder}")
         logger.info(f"Archivos guardados:")
         logger.info(f"  - {filename_json}")
         logger.info(f"  - {filename_csv}")
+        logger.info(f"Tiempo de guardado: {save_time:.2f}s")
         logger.info("="*60 + "\n")
     else:
-        logger.warning("No se extrajeron productos")
+        logger.warning("⚠️  No se extrajeron productos")
 
 
 if __name__ == "__main__":

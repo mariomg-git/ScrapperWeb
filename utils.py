@@ -17,16 +17,20 @@ def save_to_json(data: List[Dict[str, Any]], filename: str = None):
     
     Args:
         data: Lista de diccionarios con los datos
-        filename: Nombre del archivo (genera uno automático si es None)
+        filename: Nombre del archivo (puede incluir ruta completa)
     """
     try:
-        os.makedirs("data", exist_ok=True)
-        
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"scraped_data_{timestamp}.json"
-        
-        filepath = os.path.join("data", filename)
+            os.makedirs("data", exist_ok=True)
+            filepath = os.path.join("data", filename)
+        else:
+            # Si filename incluye ruta, crear directorio
+            filepath = filename
+            directory = os.path.dirname(filepath)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
         
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -45,16 +49,20 @@ def save_to_csv(data: List[Dict[str, Any]], filename: str = None):
     
     Args:
         data: Lista de diccionarios con los datos
-        filename: Nombre del archivo (genera uno automático si es None)
+        filename: Nombre del archivo (puede incluir ruta completa)
     """
     try:
-        os.makedirs("data", exist_ok=True)
-        
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"scraped_data_{timestamp}.csv"
-        
-        filepath = os.path.join("data", filename)
+            os.makedirs("data", exist_ok=True)
+            filepath = os.path.join("data", filename)
+        else:
+            # Si filename incluye ruta, crear directorio
+            filepath = filename
+            directory = os.path.dirname(filepath)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
         
         df = pd.DataFrame(data)
         df.to_csv(filepath, index=False, encoding='utf-8-sig')
