@@ -22,6 +22,10 @@ class Config:
     OUTPUT_DIR = os.getenv("OUTPUT_DIR", "data")
     LOG_DIR = "logs"
     
+    # Gmail configuration
+    GMAIL_USER = os.getenv("GMAIL_USER", "")
+    GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+    
     # Delays (en segundos)
     MIN_DELAY = 1
     MAX_DELAY = 3

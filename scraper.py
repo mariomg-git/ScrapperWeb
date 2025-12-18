@@ -28,7 +28,7 @@ load_dotenv()
 class WebScraper:
     """Clase base para realizar web scraping con Selenium"""
     
-    def __init__(self, headless: bool = True, timeout: int = 10):
+    def __init__(self, headless: bool = True, timeout: int = 3):
         """
         Inicializa el scraper
         

@@ -7,6 +7,12 @@ import logging
 import os
 import signal
 import sys
+import smtplib
+import getpass
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime
 from time import perf_counter
 from selenium.webdriver.common.by import By
@@ -47,6 +53,47 @@ def log_timing(step_name, start_time):
     timing_stats[step_name] = elapsed
     logger.info(f"⏱️  {step_name}: {elapsed:.2f}s")
     return elapsed
+
+def print_timing_summary():
+    """Imprime un resumen organizado de todos los tiempos"""
+    logger.info("\n" + "="*70)
+    logger.info("📊 RESUMEN DETALLADO DE TIEMPOS POR OPERACIÓN")
+    logger.info("="*70)
+    
+    # Agrupar por categorías
+    categories = {
+        "Setup Inicial": [],
+        "Configuración": [],
+        "Búsqueda y Filtros": [],
+        "Obtención de Enlaces": [],
+        "Extracción de Productos": [],
+        "Navegación de Páginas": [],
+        "Total": []
+    }
+    
+    for key, value in sorted(timing_stats.items(), key=lambda x: x[1], reverse=True):
+        if "Navegación inicial" in key:
+            categories["Setup Inicial"].append((key, value))
+        elif "Configuración de ubicación" in key:
+            categories["Configuración"].append((key, value))
+        elif "Búsqueda" in key or "filtros" in key:
+            categories["Búsqueda y Filtros"].append((key, value))
+        elif "enlaces" in key:
+            categories["Obtención de Enlaces"].append((key, value))
+        elif "Producto" in key or "└─" in key:
+            categories["Extracción de Productos"].append((key, value))
+        elif "Página" in key:
+            categories["Navegación de Páginas"].append((key, value))
+        elif "TOTAL" in key:
+            categories["Total"].append((key, value))
+    
+    for category, items in categories.items():
+        if items:
+            logger.info(f"\n📂 {category}:")
+            for name, duration in sorted(items, key=lambda x: x[1], reverse=True):
+                logger.info(f"  {name}: {duration:.2f}s")
+    
+    logger.info("\n" + "="*70 + "\n")
 
 
 class OfferUpDetailedScraper:
@@ -396,13 +443,18 @@ class OfferUpDetailedScraper:
         
         try:
             # Navegar al producto
+            nav_start = time.perf_counter()
             self.scraper.driver.get(product_url)
-            time.sleep(2)  # Reducido de 4s a 2s
+            time.sleep(2)
+            log_timing(f"      └─ Navegación a producto", nav_start)
             
             # Obtener todo el texto de la página para extraer información
+            text_start = time.perf_counter()
             page_text = self.scraper.driver.find_element(By.TAG_NAME, "body").text
+            log_timing(f"      └─ Obtención de texto de página", text_start)
             
             # Título - Usar el título de la página como fallback
+            title_start = time.perf_counter()
             try:
                 page_title = self.scraper.driver.title
                 if page_title and page_title != "OfferUp":
@@ -422,8 +474,10 @@ class OfferUpDetailedScraper:
                         break
                 except:
                     continue
+            log_timing(f"      └─ Extracción de título", title_start)
             
             # Precio - buscar en el texto de la página
+            price_start = time.perf_counter()
             price_pattern = r'\$[\d,]+(?:\.\d{2})?'
             prices_found = re.findall(price_pattern, page_text)
             if prices_found:
@@ -435,33 +489,46 @@ class OfferUpDetailedScraper:
                     logger.info(f"  Precio: {product_data['price']}")
                 except:
                     pass
+            log_timing(f"      └─ Extracción de precio", price_start)
             
-            # Descripción - buscar en múltiples lugares
+            # Descripción - buscar en múltiples lugares con timeout corto
+            desc_start = time.perf_counter()
             desc_selectors = [
                 "[data-testid='item-description']",
                 "div[class*='description']",
                 "p[class*='description']",
                 "pre"
             ]
+            # Reducir temporalmente el implicit wait para descripción
+            original_timeout = self.scraper.driver.timeouts.implicit_wait
+            self.scraper.driver.implicitly_wait(1)  # Solo 1 segundo para descripción
+            
             for selector in desc_selectors:
                 try:
                     desc_elem = self.scraper.driver.find_element(By.CSS_SELECTOR, selector)
                     if desc_elem and desc_elem.text and len(desc_elem.text) > 20:
-                        product_data["description"] = clean_text(desc_elem.text)[:500]  # Limitar a 500 caracteres
+                        product_data["description"] = clean_text(desc_elem.text)[:500]
                         logger.info(f"  Descripción: {len(product_data['description'])} caracteres")
                         break
                 except:
                     continue
             
+            # Restaurar timeout original
+            self.scraper.driver.implicitly_wait(original_timeout)
+            log_timing(f"      └─ Extracción de descripción", desc_start)
+            
             # Extraer ubicación del texto
+            location_start = time.perf_counter()
             if "San Diego" in page_text or "CA" in page_text:
                 # Buscar patrón de ubicación
                 location_match = re.search(r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*[A-Z]{2})', page_text)
                 if location_match:
                     product_data["location"] = location_match.group(1)
+            log_timing(f"      └─ Extracción de ubicación", location_start)
             
-            # Imágenes
+            # Imágenes - extracción inmediata sin delay
             try:
+                img_start = time.perf_counter()
                 img_elements = self.scraper.driver.find_elements(By.CSS_SELECTOR, "img")
                 for img in img_elements[:5]:
                     src = img.get_attribute('src')
@@ -469,6 +536,7 @@ class OfferUpDetailedScraper:
                         product_data["images"].append(src)
                 if product_data["images"]:
                     logger.info(f"  Imágenes: {len(product_data['images'])} encontradas")
+                log_timing(f"      └─ Extracción de imágenes", img_start)
             except:
                 pass
             
@@ -650,13 +718,8 @@ class OfferUpDetailedScraper:
             total_time = time.perf_counter() - scraping_start
             log_timing("TOTAL SCRAPING", scraping_start)
             
-            # Mostrar resumen de tiempos
-            logger.info("\n" + "="*60)
-            logger.info("RESUMEN DE TIEMPOS")
-            logger.info("="*60)
-            for step, duration in timing_stats.items():
-                logger.info(f"{step}: {duration:.2f}s")
-            logger.info("="*60 + "\n")
+            # Mostrar resumen detallado de tiempos por operación
+            print_timing_summary()
             
             if interrupted:
                 logger.info(f"💾 Datos recolectados antes de la interrupción: {len(self.all_products)} productos")
@@ -666,12 +729,556 @@ class OfferUpDetailedScraper:
         return self.all_products
 
 
+def generate_mobile_html(products, search_term, location, min_price, max_price):
+    """Genera HTML optimizado para mobile con todos los productos"""
+    
+    # Ordenar productos por precio (de menor a mayor)
+    def extract_price(product):
+        price_str = product.get('price', '$0')
+        # Extraer solo los números del precio
+        import re
+        match = re.search(r'[\d,]+', price_str)
+        if match:
+            return float(match.group().replace(',', ''))
+        return 0
+    
+    sorted_products = sorted(products, key=extract_price)
+    
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OfferUp - {search_term}</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+            padding-bottom: 20px;
+        }}
+        
+        .header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }}
+        
+        .header h1 {{
+            font-size: 24px;
+            margin-bottom: 10px;
+        }}
+        
+        .header .meta {{
+            font-size: 14px;
+            opacity: 0.9;
+        }}
+        
+        .stats {{
+            background: white;
+            padding: 15px;
+            margin: 15px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }}
+        
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }}
+        
+        .stat-item {{
+            text-align: center;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }}
+        
+        .stat-label {{
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }}
+        
+        .stat-value {{
+            font-size: 20px;
+            font-weight: bold;
+            color: #667eea;
+        }}
+        
+        .container {{
+            padding: 0 15px;
+        }}
+        
+        .product-card {{
+            background: white;
+            border-radius: 12px;
+            margin: 15px 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            overflow: hidden;
+            transition: transform 0.2s;
+        }}
+        
+        .product-card:active {{
+            transform: scale(0.98);
+        }}
+        
+        .product-header {{
+            position: relative;
+            height: 250px;
+            background: #e9ecef;
+            overflow: hidden;
+        }}
+        
+        .product-image {{
+            width: 40%;
+            height: 40%;
+            object-fit: cover;
+        }}
+        
+        .product-number {{
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }}
+        
+        .product-price {{
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: #28a745;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 20px;
+            font-weight: bold;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }}
+        
+        .product-content {{
+            padding: 15px;
+        }}
+        
+        .product-title {{
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }}
+        
+        .product-location {{
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }}
+        
+        .product-description {{
+            color: #555;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 15px;
+            max-height: 100px;
+            overflow: hidden;
+            position: relative;
+        }}
+        
+        .product-images {{
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            padding: 15px 0;
+        }}
+        
+        .product-images::-webkit-scrollbar {{
+            height: 8px;
+        }}
+        
+        .product-images::-webkit-scrollbar-thumb {{
+            background: #667eea;
+            border-radius: 2px;
+        }}
+        
+        .thumbnail {{
+            width: 100%;
+            height: auto;
+            aspect-ratio: 1;
+            border-radius: 12px;
+            object-fit: cover;
+            border: 3px solid #e9ecef;
+        }}
+        
+        .product-link {{
+            display: block;
+            background: #667eea;
+            color: white;
+            text-align: center;
+            padding: 12px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 10px;
+        }}
+        
+        .product-link:active {{
+            background: #5568d3;
+        }}
+        
+        .footer {{
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            font-size: 14px;
+        }}
+        
+        @media (min-width: 768px) {{
+            .container {{
+                max-width: 600px;
+                margin: 0 auto;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔍 {search_term}</h1>
+        <div class="meta">
+            📍 {location} | 💵 ${min_price:,} - ${max_price:,}
+        </div>
+    </div>
+    
+    <div class="stats">
+        <div class="stat-label">Resultados encontrados</div>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-label">Total</div>
+                <div class="stat-value">{len(products)}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Fecha</div>
+                <div class="stat-value">{datetime.now().strftime('%d/%m/%Y')}</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="container">
+"""
+    
+    for idx, product in enumerate(sorted_products, 1):
+        title = product.get('title', 'Sin título')
+        price = product.get('price', 'N/A')
+        location = product.get('location', 'Sin ubicación')
+        description = product.get('description', 'Sin descripción')
+        images = product.get('images', [])
+        url = product.get('url', '#')
+        
+        # Primera imagen como principal
+        main_image = images[0] if images else 'https://via.placeholder.com/800x600?text=Sin+Imagen'
+        
+        html += f"""
+        <div class="product-card">
+            <div class="product-header">
+                <img src="{main_image}" alt="{title}" class="product-image" onerror="this.src='https://via.placeholder.com/800x600?text=Sin+Imagen'">
+                <div class="product-number">#{idx}</div>
+                <div class="product-price">{price}</div>
+            </div>
+            <div class="product-content">
+                <h2 class="product-title">{title}</h2>
+                <div class="product-location">📍 {location}</div>
+                <div class="product-description">{description[:200]}{'...' if len(description) > 200 else ''}</div>
+"""
+        
+        # Thumbnails de imágenes adicionales en grid de 2 columnas
+        if len(images) > 1:
+            html += '                <div class="product-images">\n'
+            for img_url in images[1:6]:  # Máximo 5 thumbnails adicionales
+                html += f'                    <img src="{img_url}" alt="Imagen" class="thumbnail" onerror="this.style.display=&apos;none&apos;">\n'
+            html += '                </div>\n'
+        
+        html += f"""
+                <a href="{url}" class="product-link" target="_blank">Ver en OfferUp →</a>
+            </div>
+        </div>
+"""
+    
+    html += f"""
+    </div>
+    
+    <div class="footer">
+        Generado el {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}<br>
+        Total de productos: {len(products)}
+    </div>
+</body>
+</html>
+"""
+    return html
+
+
+def create_scheduled_task(task_name, script_path, schedule_time, config):
+    """Crea una tarea programada en Windows"""
+    try:
+        import subprocess
+        import json
+        
+        # Guardar configuración en archivo JSON para la tarea programada
+        config_file = os.path.join(os.path.dirname(script_path), 'scheduled_config.json')
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        
+        # Crear script batch que ejecuta el scraper con la configuración guardada
+        batch_file = os.path.join(os.path.dirname(script_path), 'run_scheduled_scraper.bat')
+        venv_python = os.path.join(os.path.dirname(script_path), 'venv', 'Scripts', 'python.exe')
+        
+        with open(batch_file, 'w') as f:
+            f.write(f'@echo off\n')
+            f.write(f'cd /d "{os.path.dirname(script_path)}"\n')
+            f.write(f'"{venv_python}" "{script_path}" --scheduled\n')
+        
+        # Comando para crear tarea programada de Windows
+        # Formato: schtasks /create /tn "nombre" /tr "comando" /sc DAILY /st HH:MM
+        cmd = [
+            'schtasks', '/create',
+            '/tn', task_name,
+            '/tr', f'"{batch_file}"',
+            '/sc', 'DAILY',
+            '/st', schedule_time,
+            '/f'  # Fuerza la creación incluso si ya existe
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            logger.info(f"✅ Tarea programada creada: {task_name}")
+            logger.info(f"⏰ Se ejecutará diariamente a las {schedule_time}")
+            logger.info(f"📝 Configuración guardada en: {config_file}")
+            logger.info(f"\n💡 Para administrar tareas programadas:")
+            logger.info(f"   - Ver: schtasks /query /tn \"{task_name}\"")
+            logger.info(f"   - Eliminar: schtasks /delete /tn \"{task_name}\" /f")
+            logger.info(f"   - O usa el Programador de tareas de Windows\n")
+            return True
+        else:
+            logger.error(f"❌ Error al crear tarea programada: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Error al crear tarea programada: {e}")
+        return False
+
+
+def send_email_gmail(recipient_email, subject, html_content, html_file_path=None, sender_email=None, sender_password=None):
+    """Envía email con HTML usando Gmail SMTP"""
+    try:
+        # Usar credenciales de .env si no se proporcionaron
+        if not sender_email:
+            sender_email = Config.GMAIL_USER if Config.GMAIL_USER else input("\n📧 Email de Gmail (remitente): ").strip()
+        
+        if not sender_password:
+            sender_password = Config.GMAIL_APP_PASSWORD if Config.GMAIL_APP_PASSWORD else None
+            if not sender_password:
+                print("\n🔑 Contraseña de aplicación de Gmail")
+                print("   (Crear en: https://myaccount.google.com/apppasswords)")
+                sender_password = getpass.getpass("   Password: ")
+        
+        # Crear mensaje
+        msg = MIMEMultipart('alternative')
+        msg['From'] = sender_email
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        
+        # Adjuntar HTML como contenido
+        html_part = MIMEText(html_content, 'html', 'utf-8')
+        msg.attach(html_part)
+        
+        # Adjuntar archivo HTML si se especifica
+        if html_file_path and os.path.exists(html_file_path):
+            with open(html_file_path, 'rb') as f:
+                attachment = MIMEBase('application', 'octet-stream')
+                attachment.set_payload(f.read())
+                encoders.encode_base64(attachment)
+                attachment.add_header('Content-Disposition', f'attachment; filename="{os.path.basename(html_file_path)}"')
+                msg.attach(attachment)
+        
+        # Conectar y enviar
+        print("\n📤 Conectando con Gmail...")
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.send_message(msg)
+        server.quit()
+        
+        logger.info(f"✅ Email enviado exitosamente a {recipient_email}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error al enviar email: {e}")
+        return False
+
+
+def get_user_input():
+    """Solicita parámetros de búsqueda al usuario"""
+
+    print("\n" + "="*60)
+    print("🔍 CONFIGURACIÓN DE BÚSQUEDA EN OFFERUP")
+    print("="*60 + "\n")
+    
+    # Término de búsqueda
+    while True:
+        search_term = input("📝 Término de búsqueda (ej: iphone, ford bronco): ").strip()
+        if search_term:
+            break
+        print("❌ Por favor ingresa un término de búsqueda válido\n")
+    
+    # Código postal
+    while True:
+        zip_code = input("\n📍 Código postal / ZIP Code (ej: 92101): ").strip()
+        if zip_code and len(zip_code) == 5 and zip_code.isdigit():
+            break
+        print("❌ Por favor ingresa un código postal válido de 5 dígitos\n")
+    
+    # Precio mínimo
+    while True:
+        try:
+            min_price_input = input("\n💵 Precio mínimo en USD (Enter para $0): ").strip()
+            min_price = 0 if not min_price_input else int(min_price_input)
+            if min_price >= 0:
+                break
+            print("❌ El precio mínimo debe ser mayor o igual a 0\n")
+        except ValueError:
+            print("❌ Por favor ingresa un número válido\n")
+    
+    # Precio máximo
+    while True:
+        try:
+            max_price_input = input(f"💵 Precio máximo en USD (Enter para sin límite): ").strip()
+            max_price = 999999 if not max_price_input else int(max_price_input)
+            if max_price >= min_price:
+                break
+            print(f"❌ El precio máximo debe ser mayor o igual al mínimo (${min_price})\n")
+        except ValueError:
+            print("❌ Por favor ingresa un número válido\n")
+    
+    # Cantidad de items
+    while True:
+        try:
+            max_items_input = input("\n🔢 Cantidad de productos a extraer (Enter para 100): ").strip()
+            max_items = 100 if not max_items_input else int(max_items_input)
+            if max_items > 0:
+                break
+            print("❌ La cantidad debe ser mayor a 0\n")
+        except ValueError:
+            print("❌ Por favor ingresa un número válido\n")
+    
+    # Configuración de email
+    send_email = input("\n📧 ¿Enviar resultados por email al finalizar? (S/n): ").strip().lower()
+    send_email = send_email in ['s', 'si', 'yes', 'y', '']
+    
+    recipient_email = None
+    if send_email:
+        while True:
+            recipient_email = input("📩 Email destinatario: ").strip()
+            if recipient_email and '@' in recipient_email:
+                break
+            print("❌ Por favor ingresa un email válido\n")
+    
+    # Configuración de programación diaria
+    schedule_daily = input("\n⏰ ¿Programar esta búsqueda diariamente? (S/n): ").strip().lower()
+    schedule_daily = schedule_daily in ['s', 'si', 'yes', 'y', '']
+    
+    schedule_time = None
+    if schedule_daily:
+        while True:
+            schedule_time = input("🕐 Hora de ejecución diaria (formato 24h, ej: 14:30): ").strip()
+            try:
+                # Validar formato HH:MM
+                hours, minutes = schedule_time.split(':')
+                hours, minutes = int(hours), int(minutes)
+                if 0 <= hours <= 23 and 0 <= minutes <= 59:
+                    break
+                print("❌ Hora inválida. Usa formato 24h (00:00 - 23:59)\n")
+            except:
+                print("❌ Formato incorrecto. Usa HH:MM (ej: 14:30)\n")
+    
+    # Confirmación
+    print("\n" + "="*60)
+    print("📋 RESUMEN DE CONFIGURACIÓN:")
+    print("="*60)
+    print(f"🔍 Búsqueda: {search_term}")
+    print(f"📍 Ubicación: {zip_code}")
+    print(f"💵 Precio: ${min_price} - ${max_price}")
+    print(f"🔢 Cantidad: {max_items} productos")
+    if send_email:
+        print(f"📧 Email: {recipient_email}")
+    if schedule_daily:
+        print(f"⏰ Programación: Diaria a las {schedule_time}")
+    print("="*60)
+    
+    confirm = input("\n✅ ¿Continuar con esta configuración? (S/n): ").strip().lower()
+    if confirm and confirm not in ['s', 'si', 'yes', 'y', '']:
+        print("\n❌ Operación cancelada por el usuario")
+        return None
+    
+    return {
+        'search_term': search_term,
+        'zip_code': zip_code,
+        'min_price': min_price,
+        'max_price': max_price,
+        'max_items': max_items,
+        'send_email': send_email,
+        'recipient_email': recipient_email,
+        'schedule_daily': schedule_daily,
+        'schedule_time': schedule_time
+    }
+
+
 def main():
     """Función principal"""
+    import sys
+    
     # Registrar manejador de señales para Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
     
     Config.create_directories()
+    
+    # Verificar si se ejecuta desde tarea programada
+    is_scheduled = '--scheduled' in sys.argv
+    
+    if is_scheduled:
+        # Cargar configuración guardada
+        config_file = os.path.join(os.path.dirname(__file__), 'scheduled_config.json')
+        if os.path.exists(config_file):
+            import json
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            logger.info("📋 Ejecutando tarea programada con configuración guardada")
+        else:
+            logger.error("❌ No se encontró archivo de configuración programada")
+            return
+    else:
+        # Solicitar parámetros al usuario
+        config = get_user_input()
+        if not config:
+            return
     
     # Crear carpeta con timestamp para esta ejecución
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -680,12 +1287,12 @@ def main():
     logger.info(f"📁 Carpeta de salida creada: {output_folder}")
     logger.info(f"ℹ️  Presiona Ctrl+C en cualquier momento para detener y guardar datos\n")
     
-    # Parámetros
-    search_term = "iphone"
-    zip_code = "92101"  # Código postal de San Diego
-    min_price = 0
-    max_price = 500
-    max_items = 100  # Total de items a extraer
+    # Parámetros del usuario
+    search_term = config['search_term']
+    zip_code = config['zip_code']
+    min_price = config['min_price']
+    max_price = config['max_price']
+    max_items = config['max_items']
     
     # Crear scraper
     scraper = OfferUpDetailedScraper(headless=False)
@@ -710,6 +1317,13 @@ def main():
         save_to_json(results, filename_json)
         save_to_csv(results, filename_csv)
         
+        # Generar HTML mobile-optimizado
+        html_content = generate_mobile_html(results, search_term, zip_code, min_price, max_price)
+        filename_html = os.path.join(output_folder, f"offerup_{search_term.replace(' ', '_')}_mobile.html")
+        with open(filename_html, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        logger.info(f"📱 HTML móvil guardado: {filename_html}")
+        
         save_time = time.perf_counter() - save_start
         
         logger.info("\n" + "="*60)
@@ -723,10 +1337,27 @@ def main():
         logger.info(f"Archivos guardados:")
         logger.info(f"  - {filename_json}")
         logger.info(f"  - {filename_csv}")
+        logger.info(f"  - {filename_html}")
         logger.info(f"Tiempo de guardado: {save_time:.2f}s")
         logger.info("="*60 + "\n")
+        
+        # Enviar por email si fue configurado
+        if not interrupted and config.get('send_email') and config.get('recipient_email'):
+            subject = f"OfferUp - {search_term} ({len(results)} productos)"
+            send_email_gmail(
+                recipient_email=config['recipient_email'],
+                subject=subject,
+                html_content=html_content,
+                html_file_path=filename_html
+            )
     else:
         logger.warning("⚠️  No se extrajeron productos")
+    
+    # Crear tarea programada si fue configurado (solo primera vez, no desde tarea programada)
+    if not interrupted and not is_scheduled and config.get('schedule_daily') and config.get('schedule_time'):
+        task_name = f"OfferUp_Scraper_{search_term.replace(' ', '_')}"
+        script_path = os.path.abspath(__file__)
+        create_scheduled_task(task_name, script_path, config['schedule_time'], config)
 
 
 if __name__ == "__main__":
