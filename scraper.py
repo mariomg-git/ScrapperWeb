@@ -59,9 +59,16 @@ class WebScraper:
             # User agent
             chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # Inicializar driver
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            # Inicializar driver con manejo de errores mejorado
+            try:
+                # Intentar con ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            except Exception as e:
+                logger.warning(f"Error con ChromeDriverManager: {e}. Intentando sin service...")
+                # Intentar sin especificar service (usar chromedriver del PATH)
+                self.driver = webdriver.Chrome(options=chrome_options)
+            
             self.driver.implicitly_wait(self.timeout)
             
             logger.info("WebDriver configurado correctamente")

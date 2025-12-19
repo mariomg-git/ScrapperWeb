@@ -1,144 +1,183 @@
 """
-Script principal de ejemplo para web scraping
+Sistema de Scraping Multi-Propósito
+Menú principal para ejecutar diferentes scrapers
 """
-import time
+import os
+import sys
 import logging
-from selenium.webdriver.common.by import By
-from scraper import WebScraper
-from utils import save_to_json, save_to_csv, log_scraping_stats, clean_text
+from config import Config
+from scraper_manager import ScraperManager
 
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('scraper.log'),
+        logging.FileHandler('main_scraper.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 
-def scrape_example_site():
-    """
-    Ejemplo de scraping de un sitio web
-    Modifica esta función según tus necesidades
-    """
-    # URL a scrapear
-    url = "https://quotes.toscrape.com/"
-    
-    # Lista para almacenar datos
-    scraped_data = []
-    start_time = time.time()
-    
-    # Usar context manager para manejar automáticamente el driver
-    with WebScraper(headless=False) as scraper:
-        # Navegar a la página
-        if not scraper.get_page(url):
-            logger.error("No se pudo cargar la página")
-            return
-        
-        # Esperar a que carguen las citas
-        scraper.wait_for_element(By.CLASS_NAME, "quote")
-        
-        # Encontrar todos los elementos de citas
-        quotes = scraper.find_elements_safe(By.CLASS_NAME, "quote")
-        logger.info(f"Se encontraron {len(quotes)} citas")
-        
-        # Extraer datos de cada cita
-        for idx, quote in enumerate(quotes, 1):
-            try:
-                # Extraer texto
-                text_element = quote.find_element(By.CLASS_NAME, "text")
-                text = clean_text(text_element.text)
-                
-                # Extraer autor
-                author_element = quote.find_element(By.CLASS_NAME, "author")
-                author = clean_text(author_element.text)
-                
-                # Extraer tags
-                tag_elements = quote.find_elements(By.CLASS_NAME, "tag")
-                tags = [clean_text(tag.text) for tag in tag_elements]
-                
-                # Crear diccionario con datos
-                data = {
-                    "id": idx,
-                    "text": text,
-                    "author": author,
-                    "tags": tags,
-                    "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                
-                scraped_data.append(data)
-                logger.info(f"Cita {idx} extraída: {author}")
-                
-            except Exception as e:
-                logger.error(f"Error extrayendo cita {idx}: {e}")
-                continue
-        
-        # Tomar screenshot
-        scraper.take_screenshot("example_screenshot.png")
-    
-    # Calcular duración
-    duration = time.time() - start_time
-    
-    # Mostrar estadísticas
-    log_scraping_stats(
-        total_items=len(quotes),
-        success=len(scraped_data),
-        failed=len(quotes) - len(scraped_data),
-        duration=duration
-    )
-    
-    # Guardar datos
-    if scraped_data:
-        save_to_json(scraped_data, "quotes.json")
-        save_to_csv(scraped_data, "quotes.csv")
-        logger.info(f"Se extrajeron {len(scraped_data)} citas exitosamente")
-    else:
-        logger.warning("No se extrajeron datos")
+def clear_screen():
+    """Limpia la consola"""
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 
-def scrape_custom_site(url: str):
+def print_header():
+    """Imprime el encabezado del menú"""
+    clear_screen()
+    print("\n" + "="*60)
+    print(" "*15 + "SISTEMA DE WEB SCRAPING")
+    print("="*60)
+
+
+def print_menu(manager: ScraperManager):
     """
-    Función plantilla para scrapear un sitio personalizado
+    Imprime el menú principal con los scrapers disponibles
     
     Args:
-        url: URL del sitio a scrapear
+        manager: Instancia de ScraperManager con scrapers registrados
     """
-    scraped_data = []
+    print("\nScrapers Disponibles:")
+    print("-" * 60)
     
-    with WebScraper(headless=True) as scraper:
-        if not scraper.get_page(url):
-            return
-        
-        # TODO: Implementar lógica de scraping específica
-        # Ejemplo:
-        # scraper.wait_for_element(By.CSS_SELECTOR, "tu-selector")
-        # elements = scraper.find_elements_safe(By.CSS_SELECTOR, "tu-selector")
-        
-        # for element in elements:
-        #     data = {
-        #         "field1": element.find_element(...).text,
-        #         "field2": element.find_element(...).text,
-        #     }
-        #     scraped_data.append(data)
-        
-        pass
+    scrapers = manager.list_scrapers()
+    for idx, (key, scraper) in enumerate(scrapers.items(), 1):
+        print(f"{idx}. {scraper['name']}")
+        print(f"   → {scraper['description']}")
+        print()
     
-    # Guardar datos
-    if scraped_data:
-        save_to_json(scraped_data)
-        save_to_csv(scraped_data)
+    print(f"{len(scrapers) + 1}. Salir")
+    print("-" * 60)
+
+
+def run_offerup_scraper():
+    """Ejecuta el scraper de OfferUp"""
+    from offerup_detailed_scraper import main as offerup_main
+    offerup_main()
+
+
+def run_clothing_image_scraper():
+    """Ejecuta el scraper de imágenes de ropa"""
+    from clothing_scraper import run_clothing_scraper
+    print("\n" + "="*60)
+    print("INICIANDO SCRAPER DE IMÁGENES DE ROPA")
+    print("="*60 + "\n")
+    run_clothing_scraper()
+
+
+def setup_scrapers():
+    """
+    Configura y registra todos los scrapers disponibles
+    
+    Returns:
+        ScraperManager con todos los scrapers registrados
+    """
+    manager = ScraperManager()
+    
+    # Registrar scraper de OfferUp
+    manager.register_scraper(
+        key='offerup',
+        name='OfferUp Scraper',
+        description='Busca y extrae información de productos en OfferUp',
+        execute_func=run_offerup_scraper
+    )
+    
+    # Registrar scraper de imágenes de ropa
+    manager.register_scraper(
+        key='clothing',
+        name='Clothing Image Scraper',
+        description='Descarga imágenes de ropa de sitios web populares',
+        execute_func=run_clothing_image_scraper
+    )
+    
+    # Aquí puedes agregar más scrapers en el futuro
+    # manager.register_scraper(
+    #     key='nuevo_scraper',
+    #     name='Nuevo Scraper',
+    #     description='Descripción del nuevo scraper',
+    #     execute_func=funcion_ejecutar_scraper
+    # )
+    
+    return manager
+
+
+def main():
+    """Función principal del programa"""
+    # Crear directorios necesarios
+    Config.create_directories()
+    
+    # Configurar scrapers
+    manager = setup_scrapers()
+    scrapers = manager.list_scrapers()
+    scraper_keys = list(scrapers.keys())
+    
+    while True:
+        try:
+            # Mostrar menú
+            print_header()
+            print_menu(manager)
+            
+            # Obtener selección del usuario
+            choice = input("\nSelecciona una opción: ").strip()
+            
+            # Validar entrada
+            if not choice.isdigit():
+                print("\n⚠ Por favor ingresa un número válido")
+                input("\nPresiona Enter para continuar...")
+                continue
+            
+            choice_num = int(choice)
+            
+            # Opción de salir
+            if choice_num == len(scrapers) + 1:
+                print("\n" + "="*60)
+                print(" "*15 + "¡Hasta luego!")
+                print("="*60 + "\n")
+                break
+            
+            # Validar rango
+            if choice_num < 1 or choice_num > len(scrapers):
+                print(f"\n⚠ Opción inválida. Selecciona entre 1 y {len(scrapers) + 1}")
+                input("\nPresiona Enter para continuar...")
+                continue
+            
+            # Ejecutar scraper seleccionado
+            selected_key = scraper_keys[choice_num - 1]
+            selected_scraper = scrapers[selected_key]
+            
+            print(f"\n✓ Has seleccionado: {selected_scraper['name']}")
+            confirm = input("¿Deseas continuar? (s/n) [s]: ").strip().lower() or 's'
+            
+            if confirm in ['s', 'si', 'sí', 'y', 'yes']:
+                try:
+                    manager.execute_scraper(selected_key)
+                except Exception as e:
+                    logger.error(f"Error ejecutando scraper: {e}")
+                    print(f"\n✗ Error: {e}")
+                
+                input("\n\nPresiona Enter para volver al menú principal...")
+            else:
+                print("\nOperación cancelada")
+                input("\nPresiona Enter para continuar...")
+        
+        except KeyboardInterrupt:
+            print("\n\n⚠ Operación interrumpida por el usuario")
+            confirm_exit = input("¿Deseas salir? (s/n): ").strip().lower()
+            if confirm_exit in ['s', 'si', 'sí', 'y', 'yes']:
+                break
+        except Exception as e:
+            logger.error(f"Error inesperado: {e}")
+            print(f"\n✗ Error inesperado: {e}")
+            input("\nPresiona Enter para continuar...")
 
 
 if __name__ == "__main__":
-    logger.info("Iniciando web scraper...")
-    
-    # Ejecutar ejemplo
-    scrape_example_site()
-    
-    # Para scrapear un sitio personalizado:
-    # scrape_custom_site("https://tu-sitio.com")
-    
-    logger.info("Scraping completado")
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Error fatal en la aplicación: {e}")
+        print(f"\n✗ Error fatal: {e}")
+        sys.exit(1)

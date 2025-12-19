@@ -42,6 +42,21 @@ class Config:
     LOG_LEVEL = "INFO"
     LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     
+    # Configuración específica de scrapers
+    SCRAPERS = {
+        'offerup': {
+            'name': 'OfferUp Scraper',
+            'description': 'Busca productos en OfferUp',
+            'default_headless': False
+        },
+        'clothing': {
+            'name': 'Clothing Image Scraper',
+            'description': 'Descarga imágenes de ropa de sitios web',
+            'default_headless': False,
+            'max_images': 20
+        }
+    }
+    
     @classmethod
     def create_directories(cls):
         """Crea los directorios necesarios"""

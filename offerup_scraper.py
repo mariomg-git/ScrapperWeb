@@ -374,5 +374,80 @@ def main():
         logger.info("Revisa el archivo HTML guardado y los screenshots para análisis")
 
 
+def run_offerup_scraper():
+    """Función interactiva para ejecutar el scraper de OfferUp desde el menú principal"""
+    print("\n" + "="*50)
+    print("SCRAPER DE OFFERUP")
+    print("="*50)
+    
+    Config.create_directories()
+    
+    # Obtener parámetros del usuario
+    search_term = input("\nTérmino de búsqueda (ej: iphone, laptop, fridge) [default: iphone]: ").strip() or "iphone"
+    location = input("Ubicación (ej: San Diego, CA) [default: San Diego, CA]: ").strip() or "San Diego, CA"
+    
+    try:
+        min_price = int(input("Precio mínimo [default: 0]: ").strip() or '0')
+    except ValueError:
+        min_price = 0
+    
+    try:
+        max_price_input = input("Precio máximo [default: sin límite]: ").strip()
+        max_price = int(max_price_input) if max_price_input else None
+    except ValueError:
+        max_price = None
+    
+    try:
+        max_items = int(input("Número máximo de items [default: 30]: ").strip() or '30')
+    except ValueError:
+        max_items = 30
+    
+    # Mostrar resumen
+    print("\n" + "-"*50)
+    print("RESUMEN DE LA BÚSQUEDA:")
+    print("-"*50)
+    print(f"Término: {search_term}")
+    print(f"Ubicación: {location}")
+    print(f"Precio mínimo: ${min_price}")
+    print(f"Precio máximo: {'Sin límite' if max_price is None else f'${max_price}'}")
+    print(f"Máximo de items: {max_items}")
+    print("-"*50)
+    
+    confirm = input("\n¿Iniciar búsqueda? (s/n) [s]: ").strip().lower() or 's'
+    
+    if confirm not in ['s', 'si', 'sí', 'y', 'yes']:
+        print("\nBúsqueda cancelada")
+        return
+    
+    # Ejecutar scraping
+    logger.info(f"Iniciando scraping de OfferUp")
+    logger.info(f"Búsqueda: {search_term}")
+    logger.info(f"Ubicación: {location}")
+    
+    scraper = OfferUpScraper(headless=False)
+    results = scraper.search_items(
+        search_term=search_term,
+        location=location,
+        min_price=min_price,
+        max_price=max_price,
+        max_items=max_items
+    )
+    
+    # Guardar resultados
+    if results:
+        save_to_json(results, f"offerup_{search_term}.json")
+        save_to_csv(results, f"offerup_{search_term}.csv")
+        print(f"\n✓ Scraping completado exitosamente!")
+        print(f"✓ Se extrajeron {len(results)} items")
+    else:
+        print("\n✗ No se extrajeron datos")
+        print("\nNOTA IMPORTANTE:")
+        print("OfferUp es un sitio complejo que puede requerir:")
+        print("- Inicio de sesión")
+        print("- Manejo de CAPTCHA")
+        print("- Esperas más largas")
+        print("- Técnicas anti-detección más avanzadas")
+
+
 if __name__ == "__main__":
     main()
