@@ -68,6 +68,15 @@ def run_clothing_image_scraper():
     run_clothing_scraper()
 
 
+def run_tijuana_executives_scraper():
+    """Ejecuta el scraper de ejecutivos de Tijuana"""
+    from tijuana_executives_scraper import main as executives_main
+    print("\n" + "="*60)
+    print("INICIANDO SCRAPER DE EJECUTIVOS TIJUANA")
+    print("="*60 + "\n")
+    executives_main()
+
+
 def setup_scrapers():
     """
     Configura y registra todos los scrapers disponibles
@@ -91,6 +100,14 @@ def setup_scrapers():
         name='Clothing Image Scraper',
         description='Descarga imágenes de ropa de sitios web populares',
         execute_func=run_clothing_image_scraper
+    )
+    
+    # Registrar scraper de ejecutivos de Tijuana
+    manager.register_scraper(
+        key='executives',
+        name='Tijuana Executives Scraper',
+        description='Busca y extrae información de ejecutivos y directivos en Tijuana',
+        execute_func=run_tijuana_executives_scraper
     )
     
     # Aquí puedes agregar más scrapers en el futuro
